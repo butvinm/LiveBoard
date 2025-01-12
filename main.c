@@ -149,6 +149,13 @@ int main(int argc, char* argv[]) {
         exit(EXIT_FAILURE);
     }
 
+    int opt = 1;
+    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        perror("[ERROR] setsockopt failed");
+        close(server_fd);
+        exit(EXIT_FAILURE);
+    }
+
     memset(&address, 0, sizeof(address));
     address.sin_family = AF_INET;
     address.sin_addr.s_addr = INADDR_ANY;
