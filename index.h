@@ -63,5 +63,18 @@
 "                });" \
 "            </script>" \
 "        </div>" \
+"        <div id\"svg\" style=\"display: flex; align-items: center; gap: 10px\">" \
+"            <svg></svg>" \
+"        </div>" \
+"        <div id=\"to-svg\" style=\"display: flex; align-items: center; gap: 10px\">" \
+"            <h3>SVG:</h3>" \
+"            <button id=\"svg-button\">Generate SVG</button>" \
+"            <script>" \
+"                const svg_button = document.getElementById(\"svg-button\");" \
+"                svg_button.addEventListener(\"click\", async () => {" \
+"                    const response = await fetch(`/svg`, { method: \"POST\" });" \
+"                    document.getElementById(\"svg\").innerHtml = await response.text();" \
+"                });" \
+"            </script>" \
 "    </body>" \
-"</html>" \
+"</html>"
