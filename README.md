@@ -17,7 +17,9 @@ LiveBoard is a program supposed to run on a Raspberry Pi with a webcam or any si
 
 Run stream: `./mjpg_streamer -i "./input_uvc.so -d /dev/video4" -o "./output_http.so -w ./www -p 8080"`
 
-Build and run server: `clang main.c -o main && ./main 8081 /dev/video4 "http://localhost:8080/?action=stream"`
+Build server: `clang -o main -lm -lcurl main.c`
+Run server: `./main 8081 /dev/video4 "http://localhost:8080/?action=stream" "http://localhost:8080/?action=action"`
+
 
 List of available video devices: `v4l2-ctl --list-devices`
 List available control settings: `v4l2-ctl -d /dev/video0 --list-ctrls`

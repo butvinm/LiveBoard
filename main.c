@@ -4,7 +4,6 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <arpa/inet.h>
-#include <curl/curl.h>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -12,15 +11,18 @@
 #define WB2SVG_IMPLEMENTATION
 #include "wb2svg.h"
 
-#define _RUN_IMPLEMENTATION
-#include "run.h"
-#undef _RUN_IMPLEMENTATION
+#define _CURL_DOWNLOAD_IMPLEMENTATION
+#include "curl_download.h"
 
 #define _DEVICES_IMPLEMENTATION
 #include "devices.h"
 
+#define _RUN_IMPLEMENTATION
+#include "run.h"
 
-#define MAX_BODY_SIZE (1024*1024)
+
+#define MAX_BODY_SIZE (11*1024*1024)
+#define MAX_SVG_SIZE (10*1024*1024)
 
 #define CTRLS_COUNT 3
 
@@ -30,20 +32,6 @@ static const char* CTRLS[CTRLS_COUNT] = {
     "saturation"
 };
 
-// const int ctrls_init_values[], const char* svg, const char* stream_url
-
-        // INDEX_PAGE,
-        // stream_url,
-        // ctrls_init_values[0],
-        // ctrls_init_values[0],
-        // ctrls_init_values[0],
-        // ctrls_init_values[1],
-        // ctrls_init_values[1],
-        // ctrls_init_values[1],
-        // ctrls_init_values[2],
-        // ctrls_init_values[2],
-        // ctrls_init_values[2],
-        // svg
 
 void build_response(char* response, const char* status, char* body) {
     sprintf(
@@ -60,7 +48,7 @@ void build_response(char* response, const char* status, char* body) {
 
 
 void build_index_page(char* response, const int ctrls_init_values[], const char* stream_url) {
-    FILE* index_page_tpl_file = fopen("pages/index.html", "r");    
+    FILE* index_page_tpl_file = fopen("pages/index.html", "r");
     fseek(index_page_tpl_file, 0, SEEK_END);
     size_t fsize = ftell(index_page_tpl_file);
     fseek(index_page_tpl_file, 0, SEEK_SET);
@@ -71,7 +59,7 @@ void build_index_page(char* response, const int ctrls_init_values[], const char*
 
     char* body = malloc(fsize + 1000);
     sprintf(
-        body, 
+        body,
         index_page_tpl,
         stream_url,
         ctrls_init_values[0],
@@ -93,32 +81,29 @@ void build_index_page(char* response, const int ctrls_init_values[], const char*
 }
 
 
-
-int download_file(const char *url, const char *output_file);
-
 void handle_request(int client_socket, const char* device, const int ctrls_init_values[], const char* stream_url, const char* snapshot_url) {
-    char request[MAX_BODY_SIZE];
-    int bytes_read = read(client_socket, request, sizeof(request) - 1);
+    char* request = malloc(MAX_BODY_SIZE*sizeof(char));
+    int bytes_read = read(client_socket, request, MAX_BODY_SIZE - 1);
     if (bytes_read < 0) {
         fprintf(stderr, "[ERROR] Failed to read request\n");
-        close(client_socket); 
+        close(client_socket);
+        free(request);
         return;
     }
     request[bytes_read] = '\0';
 
-    
-    char* response = malloc(sizeof(char) * 1024 * 1024 * 10);
-
-    // POST /ctrls/?brightness=128
+    char* response = malloc(MAX_BODY_SIZE*sizeof(char));
     if (strstr(request, "POST /ctrls/?")) {
+        // POST /ctrls/?brightness=128
         char ctrl_name[32];
         char ctrl_value[32];
 
         const char* query = strchr(request, '?') + 1;
         const char* equals = strchr(query, '=');
         if (!equals) {
-            fprintf(stderr, "[ERROR] Invalid request: no '=' found in query.\n");    
-            return;
+            fprintf(stderr, "[ERROR] Invalid request: no '=' found in query.\n");
+            build_response(response, "400 Bad Request", "Invalid request: no '=' found in query");
+            goto finish;
         }
 
         size_t ctrl_name_len = equals - query;
@@ -128,8 +113,9 @@ void handle_request(int client_socket, const char* device, const int ctrls_init_
         const char* value = equals + 1;
         const char* space = strchr(query, ' ');
         if (!space) {
-            fprintf(stderr, "[ERROR] Invalid request: no ' ' found after query value.\n");    
-            return;
+            fprintf(stderr, "[ERROR] Invalid request: no ' ' found after query value.\n");
+            build_response(response, "400 Bad Request", "Invalid request: no ' ' found after query value");
+            goto finish;
         }
 
         size_t ctrl_value_len = space - value;
@@ -146,91 +132,58 @@ void handle_request(int client_socket, const char* device, const int ctrls_init_
         printf("[INFO] Set control value: %s=%d\n", ctrl_name, atoi(ctrl_value));
 
         if (!ctrl_exist) {
-            fprintf(stderr, "[ERROR] Unknown control: %s\n", ctrl_name);   
-            return;
+            fprintf(stderr, "[ERROR] Unknown control: %s\n", ctrl_name);
+            build_response(response, "400 Bad Request", "Unknown control");
+            goto finish;
         }
 
         dev_set_ctrl(device, ctrl_name, atoi(ctrl_value));
         build_response(response, "200 OK", "");
+        goto finish;
     } else if (strstr(request, "GET /svg")) {
-        char* svg = (char*)malloc(1024*1024*10);
+        printf("[INFO] GET /svg\n");
+
+        char* svg = malloc(MAX_SVG_SIZE*sizeof(char));
         sprintf(svg, "");
-    
-        printf("Start converting to SVG\n");
         char output[4096];
         download_file(snapshot_url, "image.jpg");
 
         int width, height;
         wb2svg_rgba* pixels = (wb2svg_rgba*)stbi_load("image.jpg", &width, &height, NULL, 4);
         if (pixels == NULL) {
-            fprintf(stderr, "ERROR: could not read %s\n", "image.jpg");    free(svg);
-            return;
+            fprintf(stderr, "[ERROR] Could not read image.jpg\n");
+            build_response(response, "500 Internal Server Error", "Could not read image.jpg");
+            free(svg);
+            goto finish;
         }
         wb2svg_img img = { .pixels = pixels, .width = width, .height = height };
 
-        if (wb2svg_wb2svg(img, svg, 1024*1024*10) < 0) {
-            fprintf(stderr, "ERROR: buffer size exceeded.");
-        } else {
-            printf("Converted successful\n");
+        if (wb2svg_wb2svg(img, svg, MAX_SVG_SIZE) < 0) {
+            fprintf(stderr, "[ERROR] Buffer size exceeded.");
+            build_response(response, "500 Internal Server Error", "Buffer size exceeded.");
+            free(svg);
+            goto finish;
         }
 
         printf("[INFO] SVG generated\n");
+
         build_response(response, "200 OK", svg);
         free(svg);
+        goto finish;
     } else {
         build_index_page(response, ctrls_init_values, stream_url);
+        goto finish;
     }
+
+finish:
     write(client_socket, response, strlen(response));
     close(client_socket);
     free(response);
+    free(request);
 }
 
-size_t write_data(void *ptr, size_t size, size_t nmemb, FILE *stream) {
-    return fwrite(ptr, size, nmemb, stream);
-}
-
-int download_file(const char *url, const char *output_file) {
-    CURL *curl;
-    FILE *fp;
-    CURLcode res;
-
-    printf("Start downloading\n");
-    curl = curl_easy_init();
-    if (!curl) {
-        fprintf(stderr, "Failed to initialize libcurl\n");
-        return 1;
-    }
-
-    fp = fopen(output_file, "wb");
-    if (!fp) {
-        fprintf(stderr, "Failed to open file %s for writing\n", output_file);
-        curl_easy_cleanup(curl);
-        return 1;
-    }
-
-    curl_easy_setopt(curl, CURLOPT_URL, url);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_data);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, fp);
-
-    printf("Perform curl\n");
-
-    // Perform the request
-    res = curl_easy_perform(curl);
-    if (res != CURLE_OK) {
-        fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-        fclose(fp);
-        curl_easy_cleanup(curl);
-        return 1;
-    }
-
-    // Clean up
-    fclose(fp);
-    curl_easy_cleanup(curl);
-    return 0;
-}
 
 int main(int argc, char* argv[]) {
-    // main <port> <dev/video> <stream-url>
     if (argc < 5) {
         fprintf(stderr, "[ERROR] Usage: main <port> <dev/video> <stream-url> <snapshot-url>\n");
         exit(EXIT_FAILURE);
@@ -299,7 +252,7 @@ int main(int argc, char* argv[]) {
             perror("Accept failed\n");
             continue;
         }
-        handle_request(client_socket, device, ctrlhttp://192.168.31.105:8080/?action=streams_init_values, stream_url, snapshot_url);
+        handle_request(client_socket, device, ctrls_init_values, stream_url, snapshot_url);
     }
 
     close(server_fd);
